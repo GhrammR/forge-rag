@@ -70,7 +70,7 @@ cd forge-rag
 npm install
 ```
 
-Copy `.env.local.example` to `.env.local` and fill in your keys:
+Copy `.env.example` to `.env.local` and fill in your keys:
 
 ```bash
 cp .env.example .env.local
