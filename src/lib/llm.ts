@@ -13,14 +13,22 @@ function getClient(): Anthropic {
   return client;
 }
 
-export async function callClaude(prompt: string): Promise<string> {
-  const response = await getClient().messages.create({
+export async function streamClaude(
+  prompt: string,
+  onText: (text: string) => void,
+): Promise<void> {
+  const stream = getClient().messages.stream({
     model: MODEL,
     max_tokens: 1024,
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const block = response.content.find((b) => b.type === 'text');
-  if (!block || block.type !== 'text') throw new Error('No text block in Claude response');
-  return block.text;
+  for await (const event of stream) {
+    if (
+      event.type === 'content_block_delta' &&
+      event.delta.type === 'text_delta'
+    ) {
+      onText(event.delta.text);
+    }
+  }
 }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { embedQuery } from '@/lib/embed';
 import { queryChunks } from '@/lib/vectorStore';
 import { buildPrompt } from '@/lib/prompt';
-import { callClaude } from '@/lib/llm';
+import { streamClaude } from '@/lib/llm';
 
 export const runtime = 'nodejs';
 
@@ -18,11 +18,34 @@ export async function POST(req: NextRequest) {
 
   const vector = await embedQuery(question);
   const chunks = await queryChunks(vector, TOP_K);
-
   const { prompt } = buildPrompt(question, chunks);
-  const answer = await callClaude(prompt);
 
-  console.log(`[query] "${question}" → ${answer.slice(0, 120).replace(/\n/g, ' ')}…`);
+  const encoder = new TextEncoder();
 
-  return NextResponse.json({ question, answer, chunks });
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data: object) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      };
+
+      try {
+        await streamClaude(prompt, (text) => {
+          send({ type: 'chunk', text });
+        });
+        send({ type: 'done', chunks });
+      } catch (err) {
+        send({ type: 'error', message: err instanceof Error ? err.message : 'Unknown error' });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
 }
