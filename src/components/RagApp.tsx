@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import type { RetrievedChunk } from '@/types';
+import { parseCitations } from '@/lib/parseCitations';
 
 interface Message {
   id: string;
@@ -9,12 +10,91 @@ interface Message {
   answer: string;
   chunks: RetrievedChunk[];
   streaming: boolean;
+  activeCitation: number | null;
   error?: string;
 }
 
 interface UploadedDoc {
   docName: string;
   chunkCount: number;
+}
+
+function AnswerText({
+  text,
+  chunks,
+  streaming,
+  activeCitation,
+  onCitationClick,
+}: {
+  text: string;
+  chunks: RetrievedChunk[];
+  streaming: boolean;
+  activeCitation: number | null;
+  onCitationClick: (index: number) => void;
+}) {
+  const segments = parseCitations(text);
+
+  return (
+    <>
+      {segments.map((seg, i) => {
+        if (seg.type === 'text') {
+          return <span key={i}>{seg.content}</span>;
+        }
+        const exists = seg.index >= 1 && seg.index <= chunks.length;
+        const isActive = activeCitation === seg.index;
+        return (
+          <button
+            key={i}
+            onClick={() => exists && onCitationClick(seg.index)}
+            disabled={!exists}
+            className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-semibold mx-0.5 align-middle transition-colors ${
+              exists
+                ? isActive
+                  ? 'bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900'
+                  : 'bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-300 dark:hover:bg-zinc-600'
+                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 cursor-default'
+            }`}
+          >
+            {seg.index}
+          </button>
+        );
+      })}
+      {streaming && (
+        <span className="inline-block w-0.5 h-4 bg-zinc-400 ml-0.5 animate-pulse align-middle" />
+      )}
+    </>
+  );
+}
+
+function SourcePanel({
+  index,
+  chunk,
+  onClose,
+}: {
+  index: number;
+  chunk: RetrievedChunk;
+  onClose: () => void;
+}) {
+  return (
+    <div className="mt-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 text-xs overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800">
+        <span className="font-medium text-zinc-700 dark:text-zinc-200">
+          Source [{index}] &mdash; <span className="text-zinc-500 dark:text-zinc-400">{chunk.docName}</span>
+          <span className="ml-2 text-zinc-400">chunk {chunk.position}</span>
+        </span>
+        <button
+          onClick={onClose}
+          className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors leading-none"
+          aria-label="Close source panel"
+        >
+          ✕
+        </button>
+      </div>
+      <p className="px-3 py-2.5 leading-relaxed text-zinc-600 dark:text-zinc-300 whitespace-pre-wrap max-h-48 overflow-y-auto">
+        {chunk.text}
+      </p>
+    </div>
+  );
 }
 
 export default function RagApp() {
@@ -59,12 +139,22 @@ export default function RagApp() {
     }
   }
 
+  function setCitation(id: string, index: number | null) {
+    setMessages(prev => prev.map(m =>
+      m.id === id
+        ? { ...m, activeCitation: m.activeCitation === index ? null : index }
+        : m
+    ));
+  }
+
   async function submitQuestion() {
     const q = question.trim();
     if (!q || isStreaming) return;
 
     const id = crypto.randomUUID();
-    setMessages(prev => [...prev, { id, question: q, answer: '', chunks: [], streaming: true }]);
+    setMessages(prev => [...prev, {
+      id, question: q, answer: '', chunks: [], streaming: true, activeCitation: null,
+    }]);
     setQuestion('');
     setIsStreaming(true);
 
@@ -143,7 +233,6 @@ export default function RagApp() {
         </div>
 
         <div className="ml-auto flex items-center gap-3">
-          {/* Upload button */}
           <input
             ref={fileInputRef}
             type="file"
@@ -198,21 +287,34 @@ export default function RagApp() {
 
                 {/* Answer */}
                 <div className="flex justify-start">
-                  <div className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 px-4 py-3 rounded-2xl rounded-tl-sm max-w-[80%] text-sm leading-relaxed whitespace-pre-wrap">
+                  <div className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 px-4 py-3 rounded-2xl rounded-tl-sm max-w-[80%] text-sm leading-relaxed">
                     {msg.error ? (
                       <span className="text-red-500">{msg.error}</span>
                     ) : msg.answer ? (
-                      <>
-                        {msg.answer}
-                        {msg.streaming && (
-                          <span className="inline-block w-0.5 h-4 bg-zinc-400 ml-0.5 animate-pulse align-middle" />
-                        )}
-                      </>
+                      <AnswerText
+                        text={msg.answer}
+                        chunks={msg.chunks}
+                        streaming={msg.streaming}
+                        activeCitation={msg.activeCitation}
+                        onCitationClick={index => setCitation(msg.id, index)}
+                      />
                     ) : (
                       <span className="inline-block w-0.5 h-4 bg-zinc-400 animate-pulse align-middle" />
                     )}
                   </div>
                 </div>
+
+                {/* Source panel */}
+                {msg.activeCitation !== null &&
+                  msg.chunks[msg.activeCitation - 1] && (
+                    <div className="max-w-[80%]">
+                      <SourcePanel
+                        index={msg.activeCitation}
+                        chunk={msg.chunks[msg.activeCitation - 1]}
+                        onClose={() => setCitation(msg.id, null)}
+                      />
+                    </div>
+                  )}
               </div>
             ))}
             <div ref={bottomRef} />
