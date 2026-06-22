@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { embedQuery } from '@/lib/embed';
 import { queryChunks } from '@/lib/vectorStore';
+import { buildPrompt } from '@/lib/prompt';
+import { callClaude } from '@/lib/llm';
 
 export const runtime = 'nodejs';
 
@@ -17,5 +19,10 @@ export async function POST(req: NextRequest) {
   const vector = await embedQuery(question);
   const chunks = await queryChunks(vector, TOP_K);
 
-  return NextResponse.json({ question, chunks });
+  const { prompt } = buildPrompt(question, chunks);
+  const answer = await callClaude(prompt);
+
+  console.log(`[query] "${question}" → ${answer.slice(0, 120).replace(/\n/g, ' ')}…`);
+
+  return NextResponse.json({ question, answer, chunks });
 }
