@@ -4,6 +4,8 @@ A portfolio RAG demo built with Next.js 16, Claude, Voyage AI, and Upstash Vecto
 
 **Live demo:** https://forge-rag-three.vercel.app/
 
+<img width="1902" height="898" alt="Screenshot 2026-06-22 131206" src="https://github.com/user-attachments/assets/fe04d416-0d5c-4131-a325-1f19e85cbcff" />
+
 ---
 
 ## How it works
