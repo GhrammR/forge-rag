@@ -1,8 +1,10 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import type { RetrievedChunk } from '@/types';
 import { parseCitations } from '@/lib/parseCitations';
+
+const ABSTENTION = "I couldn't find that in the provided documents.";
 
 interface Message {
   id: string;
@@ -19,6 +21,30 @@ interface UploadedDoc {
   chunkCount: number;
 }
 
+// ── sub-components ────────────────────────────────────────────────────────────
+
+function UploadIcon() {
+  return (
+    <svg className="w-10 h-10 text-zinc-300 dark:text-zinc-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+    </svg>
+  );
+}
+
+function LoadingDots() {
+  return (
+    <span className="inline-flex items-center gap-1 py-0.5">
+      {[0, 1, 2].map(i => (
+        <span
+          key={i}
+          className="w-1.5 h-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500 animate-bounce"
+          style={{ animationDelay: `${i * 150}ms` }}
+        />
+      ))}
+    </span>
+  );
+}
+
 function AnswerText({
   text,
   chunks,
@@ -32,6 +58,17 @@ function AnswerText({
   activeCitation: number | null;
   onCitationClick: (index: number) => void;
 }) {
+  if (text === ABSTENTION) {
+    return (
+      <span className="flex items-start gap-2 text-zinc-500 dark:text-zinc-400 italic">
+        <svg className="w-4 h-4 mt-0.5 flex-shrink-0 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+        </svg>
+        {text}
+      </span>
+    );
+  }
+
   const segments = parseCitations(text);
 
   return (
@@ -47,6 +84,7 @@ function AnswerText({
             key={i}
             onClick={() => exists && onCitationClick(seg.index)}
             disabled={!exists}
+            title={exists ? `View source ${seg.index}` : undefined}
             className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-semibold mx-0.5 align-middle transition-colors ${
               exists
                 ? isActive
@@ -79,12 +117,13 @@ function SourcePanel({
     <div className="mt-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 text-xs overflow-hidden">
       <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800">
         <span className="font-medium text-zinc-700 dark:text-zinc-200">
-          Source [{index}] &mdash; <span className="text-zinc-500 dark:text-zinc-400">{chunk.docName}</span>
+          Source [{index}] &mdash;{' '}
+          <span className="text-zinc-500 dark:text-zinc-400">{chunk.docName}</span>
           <span className="ml-2 text-zinc-400">chunk {chunk.position}</span>
         </span>
         <button
           onClick={onClose}
-          className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors leading-none"
+          className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors leading-none ml-4"
           aria-label="Close source panel"
         >
           ✕
@@ -97,6 +136,8 @@ function SourcePanel({
   );
 }
 
+// ── main component ────────────────────────────────────────────────────────────
+
 export default function RagApp() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [docs, setDocs] = useState<UploadedDoc[]>([]);
@@ -104,22 +145,42 @@ export default function RagApp() {
   const [uploadError, setUploadError] = useState('');
   const [question, setQuestion] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // auto-scroll when a message grows
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, messages[messages.length - 1]?.answer]);
 
-  async function handleFiles(files: FileList) {
-    if (files.length === 0) return;
+  // auto-resize textarea
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [question]);
+
+  // ── upload ──────────────────────────────────────────────────────────────────
+
+  const handleFiles = useCallback(async (files: FileList | File[]) => {
+    const list = Array.from(files).filter(f =>
+      ['pdf', 'txt', 'md'].includes(f.name.split('.').pop()?.toLowerCase() ?? '')
+    );
+    if (list.length === 0) {
+      setUploadStatus('error');
+      setUploadError('Only PDF, TXT, and MD files are supported.');
+      return;
+    }
+
     setUploadStatus('uploading');
     setUploadError('');
 
     const formData = new FormData();
-    for (const file of files) formData.append('files', file);
+    for (const file of list) formData.append('files', file);
 
     try {
       const res = await fetch('/api/ingest', { method: 'POST', body: formData });
@@ -137,7 +198,24 @@ export default function RagApp() {
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  }, []);
+
+  // ── drag and drop ───────────────────────────────────────────────────────────
+
+  function onDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(true);
   }
+  function onDragLeave(e: React.DragEvent) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragging(false);
+  }
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files);
+  }
+
+  // ── citation toggle ─────────────────────────────────────────────────────────
 
   function setCitation(id: string, index: number | null) {
     setMessages(prev => prev.map(m =>
@@ -146,6 +224,8 @@ export default function RagApp() {
         : m
     ));
   }
+
+  // ── question submit ─────────────────────────────────────────────────────────
 
   async function submitQuestion() {
     const q = question.trim();
@@ -209,7 +289,7 @@ export default function RagApp() {
       }
     } catch {
       setMessages(prev => prev.map(m =>
-        m.id === id ? { ...m, streaming: false, error: 'Stream interrupted' } : m
+        m.id === id ? { ...m, streaming: false, error: 'Stream interrupted — please try again.' } : m
       ));
     } finally {
       setIsStreaming(false);
@@ -223,8 +303,26 @@ export default function RagApp() {
     }
   }
 
+  // ── render ──────────────────────────────────────────────────────────────────
+
   return (
-    <div className="flex flex-col min-h-screen bg-zinc-50 dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100">
+    <div
+      className={`flex flex-col min-h-screen bg-zinc-50 dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 relative transition-colors ${isDragging ? 'bg-zinc-100 dark:bg-zinc-800' : ''}`}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {/* Drag overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center border-2 border-dashed border-zinc-400 dark:border-zinc-500 rounded-none pointer-events-none bg-white/80 dark:bg-zinc-900/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 text-zinc-500 dark:text-zinc-400">
+            <UploadIcon />
+            <p className="text-base font-medium">Drop files to upload</p>
+            <p className="text-sm">PDF, TXT, or MD</p>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="border-b border-zinc-200 dark:border-zinc-800 px-6 py-4 flex items-center gap-4 flex-shrink-0">
         <div>
@@ -246,7 +344,15 @@ export default function RagApp() {
             disabled={uploadStatus === 'uploading'}
             className="px-4 py-2 rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
-            {uploadStatus === 'uploading' ? 'Uploading…' : 'Upload documents'}
+            {uploadStatus === 'uploading' ? (
+              <span className="flex items-center gap-2">
+                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+                Uploading…
+              </span>
+            ) : 'Upload documents'}
           </button>
         </div>
       </header>
@@ -262,7 +368,13 @@ export default function RagApp() {
             </span>
           ))}
           {uploadError && (
-            <span className="text-xs text-red-500">{uploadError}</span>
+            <span className="inline-flex items-center gap-1.5 text-xs text-red-500 bg-red-50 dark:bg-red-900/20 px-2.5 py-1 rounded-full">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+              {uploadError}
+              <button onClick={() => setUploadError('')} className="ml-1 hover:text-red-700 dark:hover:text-red-300">✕</button>
+            </span>
           )}
         </div>
       )}
@@ -270,9 +382,27 @@ export default function RagApp() {
       {/* Messages */}
       <main className="flex-1 overflow-y-auto px-4 py-6">
         {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center text-zinc-400 dark:text-zinc-600 gap-2">
-            <p className="text-lg font-medium">No questions yet</p>
-            <p className="text-sm">Upload a document then ask a question below.</p>
+          <div className="h-full flex flex-col items-center justify-center text-center gap-4 min-h-48">
+            <UploadIcon />
+            {docs.length === 0 ? (
+              <>
+                <div>
+                  <p className="text-base font-medium text-zinc-600 dark:text-zinc-400">No documents uploaded yet</p>
+                  <p className="text-sm text-zinc-400 dark:text-zinc-600 mt-1">Click <strong>Upload documents</strong> or drop files here to get started.</p>
+                </div>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-4 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 text-sm text-zinc-600 dark:text-zinc-400 hover:border-zinc-400 dark:hover:border-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors"
+                >
+                  Choose files
+                </button>
+              </>
+            ) : (
+              <div>
+                <p className="text-base font-medium text-zinc-600 dark:text-zinc-400">Ready to answer questions</p>
+                <p className="text-sm text-zinc-400 dark:text-zinc-600 mt-1">Type a question below about your uploaded documents.</p>
+              </div>
+            )}
           </div>
         ) : (
           <div className="max-w-3xl mx-auto space-y-6">
@@ -287,9 +417,18 @@ export default function RagApp() {
 
                 {/* Answer */}
                 <div className="flex justify-start">
-                  <div className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 px-4 py-3 rounded-2xl rounded-tl-sm max-w-[80%] text-sm leading-relaxed">
+                  <div className={`border px-4 py-3 rounded-2xl rounded-tl-sm max-w-[80%] text-sm leading-relaxed ${
+                    msg.error
+                      ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400'
+                      : 'bg-white dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700'
+                  }`}>
                     {msg.error ? (
-                      <span className="text-red-500">{msg.error}</span>
+                      <span className="flex items-start gap-2">
+                        <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                        </svg>
+                        {msg.error}
+                      </span>
                     ) : msg.answer ? (
                       <AnswerText
                         text={msg.answer}
@@ -299,7 +438,7 @@ export default function RagApp() {
                         onCitationClick={index => setCitation(msg.id, index)}
                       />
                     ) : (
-                      <span className="inline-block w-0.5 h-4 bg-zinc-400 animate-pulse align-middle" />
+                      <LoadingDots />
                     )}
                   </div>
                 </div>
@@ -340,11 +479,16 @@ export default function RagApp() {
             disabled={!question.trim() || isStreaming || docs.length === 0}
             className="px-4 py-3 rounded-xl bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 text-sm font-medium hover:opacity-90 disabled:opacity-40 transition-opacity flex-shrink-0"
           >
-            {isStreaming ? '…' : 'Send'}
+            {isStreaming ? (
+              <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+            ) : 'Send'}
           </button>
         </div>
         <p className="max-w-3xl mx-auto mt-1.5 text-xs text-zinc-400 dark:text-zinc-600">
-          Enter to send · Shift+Enter for newline
+          Enter to send · Shift+Enter for newline · Drop files anywhere to upload
         </p>
       </div>
     </div>
